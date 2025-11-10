@@ -484,20 +484,38 @@ class RichardsSolver1D:
             gravity_term = (K_plus - K_minus) / dz_avg * self.cos_alpha
             d[i] = self.C[i] * h_old[i] / dt + gravity_term - self.sink[i]
 
-        # Boundary conditions
+        # Top boundary node (i=0)
+        # Set up default equation (will be modified by BC if needed)
+        dz_top = self.dz[0]
+        K_top = 0.5 * (self.K[0] + self.K[1])
+
+        a[0] = 0.0  # No node below surface
+        b[0] = self.C[0] / dt + K_top / dz_top**2
+        c[0] = -K_top / dz_top**2
+        d[0] = self.C[0] * h_old[0] / dt + K_top / dz_top * self.cos_alpha - self.sink[0]
+
+        # Bottom boundary node (i=n-1)
+        # Set up default equation (will be modified by BC if needed)
+        dz_bottom = self.dz[n-2]
+        K_bottom = 0.5 * (self.K[n-2] + self.K[n-1])
+
+        a[n-1] = -K_bottom / dz_bottom**2
+        b[n-1] = self.C[n-1] / dt + K_bottom / dz_bottom**2
+        c[n-1] = 0.0  # No node below bottom
+        d[n-1] = self.C[n-1] * h_old[n-1] / dt + K_bottom / dz_bottom * self.cos_alpha - self.sink[n-1]
+
+        # Apply boundary conditions (may override above)
         # Note: For our coordinate system, node 0 is at the top (surface)
         # and node n-1 is at the bottom
 
         # Top boundary (i=0, surface)
         if self.bc_top.location != 'top':
             raise ValueError("Top BC must have location='top'")
-        dz_surface = self.dz[0]
-        self.bc_top.apply(a, b, c, d, self.h, self.K, dz_surface, 0.0)
+        self.bc_top.apply(a, b, c, d, self.h, self.K, dz_top, 0.0)
 
         # Bottom boundary (i=n-1)
         if self.bc_bottom.location != 'bottom':
             raise ValueError("Bottom BC must have location='bottom'")
-        dz_bottom = self.dz[-1]
         self.bc_bottom.apply(a, b, c, d, self.h, self.K, dz_bottom, 0.0)
 
         # Solve tridiagonal system

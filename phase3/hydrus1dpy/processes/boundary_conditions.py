@@ -203,25 +203,37 @@ class ConstantFluxBC(BoundaryCondition):
 
     def apply(self, a, b, c, d, h, K, dz, t):
         """
-        Apply Neumann BC: modify flux term in boundary equation.
+        Apply Neumann BC: set up equation for boundary node with prescribed flux.
 
-        The discretization at boundary becomes:
-        C[i] * (h_new[i] - h_old[i]) / dt = (flux_in - flux_out) / dz - S[i]
+        For flux BC, we need to discretize the boundary node equation.
+        At top (i=0): C[0] * dh[0]/dt = (q_bc - q[0→1]) / dz
+        At bottom (i=n-1): C[n-1] * dh[n-1]/dt = (q[n-2→n-1] - q_bc) / dz
 
-        For flux BC, one of the fluxes is prescribed.
+        where q[i→i+1] = -K[i,i+1] * (dh/dz + 1)
         """
         q_bc = self.flux_func(t)
 
         if self.location == 'top':
-            # Top node: prescribed flux enters from above
-            # Modify RHS to include boundary flux
-            # d[0] already contains interior terms, add boundary flux
-            d[0] += q_bc / dz  # Flux contribution
+            # Top node (i=0)
+            # Need to set up full equation for this node
+            # The equation is already being set up by Richards solver for internal nodes
+            # We just need to modify it for the boundary
+
+            # For top BC, the flux enters from above
+            # Discretization: C[0]/dt * h[0] - K[0,1]/dz * (h[1] - h[0]) =
+            #                 C[0]/dt * h_old[0] + q_bc/dz - K[0,1]/dz * 1
+
+            # This equation needs matrix coefficients to be set
+            # Since internal loop doesn't handle i=0, we set it here
+            # Note: d[0] should already have time derivative term from solver
+            # We add the flux contribution
+            d[0] += q_bc / dz
 
         else:  # bottom
-            # Bottom node: prescribed flux exits below
+            # Bottom node (i=n-1)
+            # Similar setup for bottom
             n = len(d)
-            d[n-1] -= q_bc / dz  # Flux contribution (note sign)
+            d[n-1] -= q_bc / dz
 
     def get_flux(self, h, K, dz, t):
         """Return prescribed flux."""
