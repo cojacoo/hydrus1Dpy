@@ -1,0 +1,441 @@
+"""
+Boundary Conditions for HYDRUS1D Phase 3
+=========================================
+
+Implementation of common boundary conditions for Richards equation.
+
+Author: HYDRUS1DPy Development Team
+
+References
+----------
+Šimůnek, J., van Genuchten, M. Th., & Šejna, M. (2008).
+Development and applications of the HYDRUS and STANMOD software packages
+and related codes. Vadose Zone Journal, 7(2), 587-600.
+"""
+
+import numpy as np
+from abc import ABC, abstractmethod
+from typing import Optional, Callable
+
+
+class BoundaryCondition(ABC):
+    """
+    Abstract base class for boundary conditions.
+
+    All boundary conditions must implement methods to:
+    1. Modify the system matrix (A) and RHS (b)
+    2. Provide diagnostics (flux, head, etc.)
+    """
+
+    def __init__(self, location: str):
+        """
+        Parameters
+        ----------
+        location : str
+            Either 'top' or 'bottom'
+        """
+        if location not in ['top', 'bottom']:
+            raise ValueError("location must be 'top' or 'bottom'")
+        self.location = location
+        self.flux_history = []
+        self.head_history = []
+
+    @abstractmethod
+    def apply(
+        self,
+        a: np.ndarray,
+        b: np.ndarray,
+        c: np.ndarray,
+        d: np.ndarray,
+        h: np.ndarray,
+        K: np.ndarray,
+        dz: float,
+        t: float
+    ) -> None:
+        """
+        Apply boundary condition to the linear system.
+
+        Modifies the tridiagonal system [a, b, c] x = d in place.
+
+        Parameters
+        ----------
+        a, b, c : ndarray
+            Tridiagonal matrix diagonals (modified in place)
+        d : ndarray
+            Right-hand side vector (modified in place)
+        h : ndarray
+            Current pressure head values [cm]
+        K : ndarray
+            Current hydraulic conductivity [cm/day]
+        dz : float
+            Spatial step size [cm]
+        t : float
+            Current time [days]
+        """
+        pass
+
+    @abstractmethod
+    def get_flux(self, h: np.ndarray, K: np.ndarray, dz: float, t: float) -> float:
+        """
+        Calculate flux at the boundary [cm/day].
+
+        Positive flux = water entering domain.
+        """
+        pass
+
+    def record_state(self, h: np.ndarray, K: np.ndarray, dz: float, t: float):
+        """Record boundary state for diagnostics."""
+        flux = self.get_flux(h, K, dz, t)
+        self.flux_history.append(flux)
+
+        if self.location == 'top':
+            self.head_history.append(h[0])
+        else:
+            self.head_history.append(h[-1])
+
+
+class ConstantHeadBC(BoundaryCondition):
+    """
+    Constant (Dirichlet) boundary condition: h = h_bc
+
+    Parameters
+    ----------
+    location : str
+        'top' or 'bottom'
+    head : float or callable
+        Prescribed head [cm]. Can be:
+        - float: constant head
+        - callable: head(t) function of time
+
+    Examples
+    --------
+    >>> # Constant head at surface
+    >>> bc_top = ConstantHeadBC('top', head=-100.0)
+    >>>
+    >>> # Time-varying head at bottom
+    >>> bc_bot = ConstantHeadBC('bottom', head=lambda t: -50 * (1 + 0.1*np.sin(2*np.pi*t)))
+    """
+
+    def __init__(self, location: str, head: float | Callable):
+        super().__init__(location)
+
+        if callable(head):
+            self.head_func = head
+        else:
+            self.head_func = lambda t: float(head)
+
+    def apply(self, a, b, c, d, h, K, dz, t):
+        """Apply Dirichlet BC: directly set boundary value."""
+        h_bc = self.head_func(t)
+
+        if self.location == 'top':
+            # Top node (i=0): h[0] = h_bc
+            # Eliminate first equation: 1·h[0] = h_bc
+            a[0] = 0.0
+            b[0] = 1.0
+            c[0] = 0.0
+            d[0] = h_bc
+
+        else:  # bottom
+            # Bottom node (i=n-1): h[n-1] = h_bc
+            n = len(d)
+            a[n-1] = 0.0
+            b[n-1] = 1.0
+            c[n-1] = 0.0
+            d[n-1] = h_bc
+
+    def get_flux(self, h, K, dz, t):
+        """
+        Calculate flux from Darcy's law.
+
+        For top BC:    q = -K[1/2] * [(h[1] - h[0])/dz + 1]
+        For bottom BC: q = -K[n-3/2] * [(h[n-1] - h[n-2])/dz + 1]
+        """
+        if self.location == 'top':
+            # Flux at top surface (positive = infiltration)
+            K_interface = 0.5 * (K[0] + K[1])
+            dh_dz = (h[1] - h[0]) / dz
+            flux = -K_interface * (dh_dz + 1.0)  # +1 for gravity
+
+        else:  # bottom
+            # Flux at bottom (positive = upward)
+            n = len(h)
+            K_interface = 0.5 * (K[n-2] + K[n-1])
+            dh_dz = (h[n-1] - h[n-2]) / dz
+            flux = -K_interface * (dh_dz + 1.0)
+
+        return flux
+
+
+class ConstantFluxBC(BoundaryCondition):
+    """
+    Constant flux (Neumann) boundary condition: q = q_bc
+
+    Parameters
+    ----------
+    location : str
+        'top' or 'bottom'
+    flux : float or callable
+        Prescribed flux [cm/day]. Can be:
+        - float: constant flux
+        - callable: flux(t) function of time
+
+    Sign convention:
+    - Positive flux = water entering domain (infiltration at top, seepage at bottom)
+    - Negative flux = water leaving domain (evaporation at top, drainage at bottom)
+
+    Examples
+    --------
+    >>> # Constant infiltration at top
+    >>> bc_top = ConstantFluxBC('top', flux=0.5)  # 0.5 cm/day infiltration
+    >>>
+    >>> # Time-varying evaporation
+    >>> bc_top = ConstantFluxBC('top', flux=lambda t: -0.3 * np.sin(2*np.pi*t/365))
+    """
+
+    def __init__(self, location: str, flux: float | Callable):
+        super().__init__(location)
+
+        if callable(flux):
+            self.flux_func = flux
+        else:
+            self.flux_func = lambda t: float(flux)
+
+    def apply(self, a, b, c, d, h, K, dz, t):
+        """
+        Apply Neumann BC: modify flux term in boundary equation.
+
+        The discretization at boundary becomes:
+        C[i] * (h_new[i] - h_old[i]) / dt = (flux_in - flux_out) / dz - S[i]
+
+        For flux BC, one of the fluxes is prescribed.
+        """
+        q_bc = self.flux_func(t)
+
+        if self.location == 'top':
+            # Top node: prescribed flux enters from above
+            # Modify RHS to include boundary flux
+            # d[0] already contains interior terms, add boundary flux
+            d[0] += q_bc / dz  # Flux contribution
+
+        else:  # bottom
+            # Bottom node: prescribed flux exits below
+            n = len(d)
+            d[n-1] -= q_bc / dz  # Flux contribution (note sign)
+
+    def get_flux(self, h, K, dz, t):
+        """Return prescribed flux."""
+        return self.flux_func(t)
+
+
+class FreeDrainageBC(BoundaryCondition):
+    """
+    Free drainage (unit gradient) boundary condition: ∂h/∂z = 0
+
+    This implies q = -K (pure gravity drainage).
+    Commonly used at the bottom of soil profiles.
+
+    Parameters
+    ----------
+    location : str
+        Usually 'bottom', but can be 'top'
+
+    Notes
+    -----
+    The free drainage condition assumes:
+    - No capillary gradient (∂h/∂z = 0)
+    - Flow driven only by gravity
+    - Flux = -K(h) at boundary
+
+    This is appropriate when:
+    - Water table is deep
+    - No impermeable layer below
+    - Drainage to deeper layers
+
+    Examples
+    --------
+    >>> bc_bot = FreeDrainageBC('bottom')
+    """
+
+    def __init__(self, location: str = 'bottom'):
+        super().__init__(location)
+
+    def apply(self, a, b, c, d, h, K, dz, t):
+        """
+        Apply unit gradient: ∂h/∂z = 0
+
+        This is implemented by setting h[boundary] = h[boundary-1]
+        Or equivalently: flux = -K at boundary
+        """
+        if self.location == 'top':
+            # Top: h[0] - h[1] = 0
+            # Or: flux_top = -K[0]
+            a[0] = 0.0
+            b[0] = 1.0
+            c[0] = -1.0
+            d[0] = 0.0
+
+        else:  # bottom
+            # Bottom: h[n-1] - h[n-2] = 0
+            # Or: flux_bottom = -K[n-1]
+            n = len(d)
+            a[n-1] = -1.0
+            b[n-1] = 1.0
+            c[n-1] = 0.0
+            d[n-1] = 0.0
+
+    def get_flux(self, h, K, dz, t):
+        """
+        Calculate free drainage flux: q = -K
+
+        Negative because water is leaving the domain.
+        """
+        if self.location == 'top':
+            flux = -K[0]
+        else:
+            flux = -K[-1]
+
+        return flux
+
+
+class AtmosphericBC(BoundaryCondition):
+    """
+    Atmospheric boundary condition with surface ponding.
+
+    Attempts to apply prescribed flux (precipitation - evaporation).
+    If surface becomes too dry (h < h_min) or too wet (h > 0),
+    switches to pressure head BC.
+
+    Parameters
+    ----------
+    location : str
+        Must be 'top'
+    flux : float or callable
+        Atmospheric flux [cm/day]
+        Positive = infiltration (precipitation)
+        Negative = evaporation
+    h_min : float, optional
+        Minimum allowed surface pressure head [cm] (default: -15000)
+    h_surface : float, optional
+        Surface ponding head when saturated [cm] (default: 0.0)
+
+    Notes
+    -----
+    Algorithm:
+    1. Try to apply flux BC
+    2. After solving, check h[0]:
+       - If h[0] < h_min: switch to h = h_min (evaporation limit)
+       - If h[0] > h_surface: switch to h = h_surface (ponding)
+       - Otherwise: keep flux BC
+
+    This mimics HYDRUS-1D atmospheric boundary condition.
+
+    Examples
+    --------
+    >>> # Daily precipitation/evaporation
+    >>> def atm_flux(t):
+    ...     # Simple sinusoidal pattern
+    ...     return 0.5 * np.sin(2*np.pi*t/365)  # cm/day
+    >>>
+    >>> bc_top = AtmosphericBC('top', flux=atm_flux, h_min=-15000, h_surface=0.0)
+    """
+
+    def __init__(
+        self,
+        location: str,
+        flux: float | Callable,
+        h_min: float = -15000.0,
+        h_surface: float = 0.0
+    ):
+        if location != 'top':
+            raise ValueError("AtmosphericBC only valid at top boundary")
+
+        super().__init__(location)
+
+        if callable(flux):
+            self.flux_func = flux
+        else:
+            self.flux_func = lambda t: float(flux)
+
+        self.h_min = h_min
+        self.h_surface = h_surface
+
+        # Track BC state
+        self.bc_type = 'flux'  # Current type: 'flux', 'h_min', or 'ponding'
+        self.bc_switches = {'flux': 0, 'h_min': 0, 'ponding': 0}
+
+    def apply(self, a, b, c, d, h, K, dz, t):
+        """
+        Apply atmospheric BC based on current state.
+
+        This is evaluated AFTER the previous time step solution,
+        so h[0] contains the result from attempting flux BC.
+        """
+        q_atm = self.flux_func(t)
+
+        # Check if we need to switch BC type based on previous solution
+        if self.bc_type == 'flux':
+            # Check limits
+            if h[0] < self.h_min:
+                self.bc_type = 'h_min'
+                self.bc_switches['h_min'] += 1
+            elif h[0] > self.h_surface:
+                self.bc_type = 'ponding'
+                self.bc_switches['ponding'] += 1
+
+        elif self.bc_type == 'h_min':
+            # Check if we can return to flux BC
+            # This requires that potential flux would increase h
+            if q_atm > 0:  # Infiltration
+                self.bc_type = 'flux'
+                self.bc_switches['flux'] += 1
+
+        elif self.bc_type == 'ponding':
+            # Check if ponding has ended
+            if q_atm < 0:  # Evaporation
+                self.bc_type = 'flux'
+                self.bc_switches['flux'] += 1
+
+        # Apply the appropriate BC
+        if self.bc_type == 'flux':
+            # Apply flux BC
+            d[0] += q_atm / dz
+
+        elif self.bc_type == 'h_min':
+            # Apply minimum head BC (dry limit)
+            a[0] = 0.0
+            b[0] = 1.0
+            c[0] = 0.0
+            d[0] = self.h_min
+
+        elif self.bc_type == 'ponding':
+            # Apply surface ponding BC
+            a[0] = 0.0
+            b[0] = 1.0
+            c[0] = 0.0
+            d[0] = self.h_surface
+
+    def get_flux(self, h, K, dz, t):
+        """
+        Calculate actual flux at surface.
+
+        If flux BC is active: return prescribed flux
+        If head BC is active: calculate flux from gradient
+        """
+        if self.bc_type == 'flux':
+            return self.flux_func(t)
+        else:
+            # Head BC active - calculate actual flux
+            K_interface = 0.5 * (K[0] + K[1])
+            dh_dz = (h[1] - h[0]) / dz
+            flux = -K_interface * (dh_dz + 1.0)
+            return flux
+
+    def get_diagnostics(self) -> dict:
+        """Get atmospheric BC diagnostics."""
+        return {
+            'current_type': self.bc_type,
+            'n_switches_to_flux': self.bc_switches['flux'],
+            'n_switches_to_dry': self.bc_switches['h_min'],
+            'n_switches_to_ponding': self.bc_switches['ponding']
+        }
