@@ -182,10 +182,12 @@ class TestBoundaryConditions(unittest.TestCase):
         bc = FreeDrainageBC('bottom')
         bc.apply(self.a, self.b, self.c, self.d, self.h, self.K, self.dz, 0.0)
 
-        # Should set h[n-1] - h[n-2] = 0
+        # Should set approximately h[n-1] - h[n-2] = 0 (with small regularization)
+        # The regularized form is: (1+epsilon)*h[n-1] - h[n-2] = epsilon*h[n-1]
         self.assertEqual(self.a[self.n-1], -1.0)
-        self.assertEqual(self.b[self.n-1], 1.0)
-        self.assertEqual(self.d[self.n-1], 0.0)
+        self.assertAlmostEqual(self.b[self.n-1], 1.0, places=8)  # b = 1 + epsilon
+        # d = epsilon * h[n-1], which is very small (epsilon ~ 1e-10)
+        self.assertLess(abs(self.d[self.n-1]), 1e-7)  # Should be tiny
 
     def test_atmospheric_bc(self):
         """Test atmospheric BC."""
@@ -301,10 +303,10 @@ def run_tests():
     print(f"Errors: {len(result.errors)}")
 
     if result.wasSuccessful():
-        print("\n✓ All unit tests passed!")
+        print("\nOK All unit tests passed!")
         return 0
     else:
-        print("\n✗ Some tests failed.")
+        print("\nX Some tests failed.")
         return 1
 
 

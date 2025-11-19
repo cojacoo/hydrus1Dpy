@@ -69,7 +69,7 @@ from .io.data_structures import (
     Units,
     ProcessFlags,
     NumericalParameters,
-    BoundaryConditionData,
+    BoundaryCondition as BoundaryConditionData,
     MaterialProperties,
     ModelDomain,
     TimeControl,

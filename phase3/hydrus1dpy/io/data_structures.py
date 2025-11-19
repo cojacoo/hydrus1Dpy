@@ -225,11 +225,11 @@ class ModelDomain:
 @dataclass
 class TimeControl:
     """Time stepping and output control"""
-    t_init: float = 0.0          # Initial time (tInit)
     t_max: float                 # Maximum simulation time (tMax)
     dt_init: float               # Initial time step (dt)
     dt_min: float                # Minimum time step (dtMin)
     dt_max: float                # Maximum time step (dtMax)
+    t_init: float = 0.0          # Initial time (tInit)
     dt_multiplier: float = 1.3   # Time step multiplier (dMul)
     dt_multiplier2: float = 0.7  # Time step reduction factor (dMul2)
     print_interval: Optional[float] = None  # Print interval

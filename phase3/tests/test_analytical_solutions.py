@@ -31,7 +31,7 @@ from hydrus1dpy import HydrusModel
 from hydrus1dpy.materials import VanGenuchten
 
 
-class TestCase:
+class AnalyticalTestCase:
     """Base class for analytical test cases."""
     def __init__(self, name):
         self.name = name
@@ -45,7 +45,7 @@ class TestCase:
 
     def report(self):
         """Print test results."""
-        status = "✓ PASS" if self.passed else "✗ FAIL"
+        status = "OK PASS" if self.passed else "X FAIL"
         print(f"\n{status}: {self.name}")
         if self.max_error is not None:
             print(f"  Maximum error: {self.max_error:.4e}")
@@ -53,7 +53,7 @@ class TestCase:
             print(f"  Error message: {self.error}")
 
 
-class HydrostaticEquilibriumTest(TestCase):
+class HydrostaticEquilibriumTest(AnalyticalTestCase):
     """
     Test 1: Hydrostatic Equilibrium
 
@@ -105,7 +105,7 @@ class HydrostaticEquilibriumTest(TestCase):
             self.passed = False
 
 
-class SteadyStateInfiltrationTest(TestCase):
+class SteadyStateInfiltrationTest(AnalyticalTestCase):
     """
     Test 2: Steady-State Unit Gradient Flow
 
@@ -167,14 +167,14 @@ class SteadyStateInfiltrationTest(TestCase):
             self.passed = False
 
 
-class GravityDrainageTest(TestCase):
+class GravityDrainageTest(AnalyticalTestCase):
     """
     Test 3: Gravity Drainage
 
     Starting from saturation with free drainage at bottom and no flux at top,
     the soil should drain under gravity.
 
-    For exponential K(θ) models, analytical solutions exist (e.g., Philip, 1957).
+    For exponential K(theta) models, analytical solutions exist (e.g., Philip, 1957).
     We test that:
     1. Water content decreases monotonically
     2. Flux at bottom equals gravity drainage rate
@@ -207,8 +207,8 @@ class GravityDrainageTest(TestCase):
             theta_final = results['theta'][-1]
 
             theta_decrease = np.all(theta_final <= theta_init)
-            print(f"Initial θ (surface): {theta_init[0]:.3f}")
-            print(f"Final θ (surface): {theta_final[0]:.3f}")
+            print(f"Initial theta (surface): {theta_init[0]:.3f}")
+            print(f"Final theta (surface): {theta_final[0]:.3f}")
             print(f"Monotonic decrease: {theta_decrease}")
 
             # Check 2: Mass balance
@@ -223,7 +223,7 @@ class GravityDrainageTest(TestCase):
 
             # Check 3: Physical constraints
             within_bounds = np.all((vg.theta_r <= theta_final) & (theta_final <= vg.theta_s))
-            print(f"θ within physical bounds: {within_bounds}")
+            print(f"theta within physical bounds: {within_bounds}")
 
             self.max_error = abs(mass_error)
             self.passed = (theta_decrease and
@@ -235,7 +235,7 @@ class GravityDrainageTest(TestCase):
             self.passed = False
 
 
-class InfiltrationFrontTest(TestCase):
+class InfiltrationFrontTest(AnalyticalTestCase):
     """
     Test 4: Infiltration into Dry Soil
 
@@ -277,15 +277,15 @@ class InfiltrationFrontTest(TestCase):
             theta_init = results['theta'][0]
             theta_final = results['theta'][-1]
 
-            # Find wetting front (where θ increases significantly from initial)
+            # Find wetting front (where theta increases significantly from initial)
             theta_increase = theta_final - theta_init[0]
             wetting_depth = 0
             for i in range(len(theta_increase)):
                 if theta_increase[i] > 0.1:  # Significant wetting
                     wetting_depth = abs(model.depths[i])
 
-            print(f"Initial θ: {theta_init[0]:.3f}")
-            print(f"Surface θ (final): {theta_final[0]:.3f}")
+            print(f"Initial theta: {theta_init[0]:.3f}")
+            print(f"Surface theta (final): {theta_final[0]:.3f}")
             print(f"Wetting front depth: {wetting_depth:.1f} cm")
 
             # Mass balance
@@ -342,10 +342,10 @@ def run_all_tests():
     print(f"\nPassed: {passed}/{total} tests")
 
     if passed == total:
-        print("\n✓ All analytical validation tests passed!")
+        print("\nOK All analytical validation tests passed!")
         print("  Solver is producing physically correct results.")
     else:
-        print("\n⚠ Some tests failed. Review results above.")
+        print("\nWARNING: Some tests failed. Review results above.")
         print("  Note: Some failures may be due to numerical approximations")
         print("  or requiring longer simulation times for steady state.")
 

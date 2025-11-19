@@ -236,8 +236,9 @@ class VanGenuchten(HydraulicModel):
                 bracket
             )
 
-            # Apply safety bounds
-            C[mask] = np.maximum(C[mask], 1e-37)
+            # Apply safety bounds to prevent numerical instability
+            # Use a very small minimum to prevent division by zero
+            C[mask] = np.maximum(C[mask], 1e-30)
 
         return float(C[0]) if scalar_input else C
 
