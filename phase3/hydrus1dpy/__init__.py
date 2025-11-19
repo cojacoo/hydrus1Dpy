@@ -1,53 +1,145 @@
 """
-HYDRUS1D Python Solver - Phase 3
-==================================
+HYDRUS1DPy - Comprehensive Python Package for HYDRUS1D
+=======================================================
 
-Pure Python/Numba implementation of Richards equation solver.
+A scientifically rigorous Python implementation of the HYDRUS1D hydrological model
+for simulating one-dimensional variably saturated water flow in soils.
 
-Components:
-- Richards equation solver (mixed form)
-- Picard iteration for nonlinearity
-- Adaptive time stepping
-- Mass-conservative numerical scheme
-- Numba JIT optimization
-- Full integration with Phase 1 (I/O) and Phase 2 (materials)
+Main Components:
+---------------
+- **materials**: Soil hydraulic models (van Genuchten, Brooks-Corey, etc.)
+- **io**: Input/output handling for HYDRUS1D files
+- **core**: Richards equation solver with Picard iteration
+- **processes**: Boundary conditions and root water uptake
+- **numerics**: Numerical solvers and time stepping
+- **visualization**: Interactive Plotly visualizations
+- **utils**: Helper functions and configuration builders
+
+Quick Start:
+-----------
+>>> from hydrus1dpy import HydrusModel
+>>> from hydrus1dpy.materials import VanGenuchten
+>>>
+>>> # Create soil model
+>>> soil = VanGenuchten(theta_r=0.078, theta_s=0.430, alpha=0.036, n=1.56, Ks=24.96)
+>>>
+>>> # Create and run simulation
+>>> model = HydrusModel(depth=100.0, n_nodes=51, material=soil)
+>>> model.set_top_bc('flux', flux=0.5)
+>>> model.set_bottom_bc('free_drainage')
+>>> results = model.run(t_end=10.0, dt_init=0.01)
 
 Author: HYDRUS1DPy Development Team
-Version: 0.3.0-phase3
+Version: 1.0.0
+License: MIT
 """
 
-# Import Phase 2 materials and inject into this package's namespace
-import sys
-from pathlib import Path
-_phase2_path = str(Path(__file__).parent.parent.parent / 'phase2')
-if _phase2_path not in sys.path:
-    sys.path.insert(0, _phase2_path)
+__version__ = "1.0.0"
 
-# Import Phase 2's materials module and make it available as hydrus1dpy.materials
-import importlib.util
-_materials_spec = importlib.util.spec_from_file_location(
-    "hydrus1dpy.materials",
-    str(Path(_phase2_path) / "hydrus1dpy" / "materials" / "__init__.py")
-)
-materials = importlib.util.module_from_spec(_materials_spec)
-sys.modules["hydrus1dpy.materials"] = materials
-_materials_spec.loader.exec_module(materials)
-
+# Core solver and model
 from .core.richards_solver import RichardsSolver1D
 from .core.model import HydrusModel
+
+# Numerical components
 from .numerics.time_stepping import AdaptiveTimeStepper
+from .numerics.linear_solver import solve_tridiagonal
+
+# Boundary conditions
 from .processes.boundary_conditions import (
-    ConstantHeadBC, ConstantFluxBC, AtmosphericBC, FreeDrainageBC
+    BoundaryCondition,
+    ConstantHeadBC,
+    ConstantFluxBC,
+    AtmosphericBC,
+    FreeDrainageBC
 )
 
-__version__ = "0.3.0-phase3"
+# Materials (soil hydraulic models)
+from .materials import (
+    HydraulicModel,
+    VanGenuchten,
+    ModifiedVanGenuchten,
+    BrooksCorey,
+    DualPorosity,
+    LogNormal,
+    CustomHydraulicModel
+)
+
+# I/O components
+from .io.data_structures import (
+    Units,
+    ProcessFlags,
+    NumericalParameters,
+    BoundaryConditionData,
+    MaterialProperties,
+    ModelDomain,
+    TimeControl,
+    InitialConditions,
+    ModelConfiguration,
+    ModelResults
+)
+from .io.input_parser import InputParser
+from .io.output_parser import OutputParser
+from .io.input_writer import InputWriter
+
+# Visualization
+from .visualization.plots import HydrusVisualizer
+
+# Utilities
+from .utils.helpers import (
+    create_example_configuration,
+    create_infiltration_scenario,
+    create_layered_soil,
+    get_soil_parameters
+)
+from .utils.fortran_runner import FortranRunner
 
 __all__ = [
-    'RichardsSolver1D',
+    # Core
     'HydrusModel',
+    'RichardsSolver1D',
+
+    # Numerics
     'AdaptiveTimeStepper',
+    'solve_tridiagonal',
+
+    # Boundary conditions
+    'BoundaryCondition',
     'ConstantHeadBC',
     'ConstantFluxBC',
     'AtmosphericBC',
     'FreeDrainageBC',
+
+    # Materials
+    'HydraulicModel',
+    'VanGenuchten',
+    'ModifiedVanGenuchten',
+    'BrooksCorey',
+    'DualPorosity',
+    'LogNormal',
+    'CustomHydraulicModel',
+
+    # I/O
+    'Units',
+    'ProcessFlags',
+    'NumericalParameters',
+    'BoundaryConditionData',
+    'MaterialProperties',
+    'ModelDomain',
+    'TimeControl',
+    'InitialConditions',
+    'ModelConfiguration',
+    'ModelResults',
+    'InputParser',
+    'OutputParser',
+    'InputWriter',
+
+    # Visualization
+    'HydrusVisualizer',
+
+    # Utils
+    'create_example_configuration',
+    'create_infiltration_scenario',
+    'create_layered_soil',
+    'get_soil_parameters',
+    'FortranRunner',
 ]
