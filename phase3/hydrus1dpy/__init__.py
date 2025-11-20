@@ -50,7 +50,18 @@ from .processes.boundary_conditions import (
     ConstantHeadBC,
     ConstantFluxBC,
     AtmosphericBC,
-    FreeDrainageBC
+    FreeDrainageBC,
+    EnhancedAtmosphericBC
+)
+
+# Evapotranspiration
+from .processes.evapotranspiration import (
+    WeatherData,
+    PenmanMonteith,
+    SimpleET,
+    ETCalculator,
+    pf_to_head,
+    head_to_pf
 )
 
 # Materials (soil hydraulic models)
@@ -108,6 +119,15 @@ __all__ = [
     'ConstantFluxBC',
     'AtmosphericBC',
     'FreeDrainageBC',
+    'EnhancedAtmosphericBC',
+
+    # Evapotranspiration
+    'WeatherData',
+    'PenmanMonteith',
+    'SimpleET',
+    'ETCalculator',
+    'pf_to_head',
+    'head_to_pf',
 
     # Materials
     'HydraulicModel',

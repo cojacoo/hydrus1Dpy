@@ -17,6 +17,8 @@ import numpy as np
 from abc import ABC, abstractmethod
 from typing import Optional, Callable
 
+from .evapotranspiration import ETCalculator, pf_to_head, head_to_pf
+
 
 class BoundaryCondition(ABC):
     """
@@ -474,4 +476,272 @@ class AtmosphericBC(BoundaryCondition):
             'n_switches_to_flux': self.bc_switches['flux'],
             'n_switches_to_dry': self.bc_switches['h_min'],
             'n_switches_to_ponding': self.bc_switches['ponding']
+        }
+
+
+class EnhancedAtmosphericBC(BoundaryCondition):
+    """
+    Enhanced atmospheric boundary condition with realistic ET and infiltration.
+
+    Features:
+    - Penman-Monteith or simple ET calculation
+    - Stage 1/2 evaporation (switches at pF 4.5)
+    - Infiltration as thin water film (small positive head)
+    - Surface ponding when infiltration capacity exceeded
+
+    Parameters
+    ----------
+    location : str
+        Must be 'top'
+    precipitation : float or callable, optional
+        Precipitation rate [mm/day]. Can be:
+        - float: constant precipitation
+        - callable: precip(t) function of time
+        - None: no precipitation (default)
+    et_method : str, optional
+        ET calculation method:
+        - 'penman_monteith': FAO-56 Penman-Monteith (requires weather_func)
+        - 'simple': Constant ET (default: 4 mm/day if no other BC defined)
+        - 'none': No ET
+    et_default : float, optional
+        Default ET for 'simple' method [mm/day] (default: 4.0)
+    weather_func : callable, optional
+        Function returning WeatherData: weather_func(t) -> WeatherData
+        Required for 'penman_monteith' method
+    latitude : float, optional
+        Site latitude [degrees] for Penman-Monteith (default: 0)
+    elevation : float, optional
+        Site elevation [m] for Penman-Monteith (default: 0)
+    h_ponding : float, optional
+        Ponding head when infiltrating [cm] (default: 0.05 cm = 0.5 mm film)
+    h_stage2 : float, optional
+        Surface head for stage 2 evaporation [cm] (default: pF 4.5 = -31623 cm)
+    ponding_max : float, optional
+        Maximum ponding depth [cm] before runoff (default: 5.0 cm)
+
+    Notes
+    -----
+    Evaporation Stages:
+    - Stage 1: Potential ET when h_surface > h_stage2 (surface wet enough)
+                Flux = -ET_pot [mm/day]
+    - Stage 2: Soil-limited ET when h_surface < h_stage2 (surface too dry)
+                Switches to head BC with h = h_stage2
+                Actual ET determined by soil hydraulic properties
+
+    Infiltration:
+    - Applied as small positive head (thin water film)
+    - h_surface = h_ponding (typically 0.05 cm = 0.5 mm)
+    - Richards equation calculates actual infiltration rate
+    - More realistic than prescribed flux for capacity-limited infiltration
+
+    Examples
+    --------
+    >>> # Simple ET (4 mm/day) with occasional rainfall
+    >>> def precip(t):
+    ...     # 10 mm rain every 7 days
+    ...     if t % 7 < 0.5:
+    ...         return 10.0
+    ...     return 0.0
+    >>> bc = EnhancedAtmosphericBC(
+    ...     'top',
+    ...     precipitation=precip,
+    ...     et_method='simple',
+    ...     et_default=4.0
+    ... )
+
+    >>> # Penman-Monteith ET with weather data
+    >>> def get_weather(t):
+    ...     return WeatherData(
+    ...         time=t,
+    ...         temperature=20 + 5*np.sin(2*np.pi*t/365),
+    ...         relative_humidity=60,
+    ...         wind_speed=2.0,
+    ...         solar_radiation=15.0
+    ...     )
+    >>> bc = EnhancedAtmosphericBC(
+    ...     'top',
+    ...     precipitation=0.0,
+    ...     et_method='penman_monteith',
+    ...     weather_func=get_weather,
+    ...     latitude=52.0,
+    ...     elevation=100
+    ... )
+    """
+
+    def __init__(
+        self,
+        location: str,
+        precipitation: Optional[float | Callable] = None,
+        et_method: str = 'simple',
+        et_default: float = 4.0,
+        weather_func: Optional[Callable] = None,
+        latitude: float = 0.0,
+        elevation: float = 0.0,
+        h_ponding: float = 0.05,
+        h_stage2: float = None,
+        ponding_max: float = 5.0
+    ):
+        if location != 'top':
+            raise ValueError("EnhancedAtmosphericBC only valid at top boundary")
+
+        super().__init__(location)
+
+        # Precipitation
+        if precipitation is None:
+            self.precip_func = lambda t: 0.0
+        elif callable(precipitation):
+            self.precip_func = precipitation
+        else:
+            self.precip_func = lambda t: float(precipitation)
+
+        # ET calculator
+        if et_method == 'none':
+            self.et_calculator = None
+        else:
+            self.et_calculator = ETCalculator(
+                method=et_method,
+                weather_func=weather_func,
+                et0_default=et_default,
+                latitude=latitude,
+                elevation=elevation
+            )
+
+        # Ponding/infiltration parameters
+        self.h_ponding = h_ponding  # Small positive head for infiltration
+        self.ponding_max = ponding_max  # Maximum ponding before runoff
+
+        # Stage 2 evaporation threshold (pF 4.5 by default)
+        if h_stage2 is None:
+            self.h_stage2 = pf_to_head(4.5)  # ≈ -31623 cm
+        else:
+            self.h_stage2 = h_stage2
+
+        # State tracking
+        self.bc_type = 'flux'  # 'flux', 'infiltration', 'ponding', 'stage2_et'
+        self.bc_switches = {
+            'flux': 0,
+            'infiltration': 0,
+            'ponding': 0,
+            'stage2_et': 0
+        }
+        self.et_stage = 1  # 1 or 2
+        self.cumulative_runoff = 0.0
+
+    def apply(self, a, b, c, d, h, K, dz, t):
+        """
+        Apply enhanced atmospheric BC.
+
+        Implements:
+        1. ET calculation (Penman-Monteith or simple)
+        2. Stage 1/2 evaporation based on surface dryness
+        3. Infiltration with ponding (small positive head)
+        4. Surface runoff when ponding exceeds maximum
+        """
+        # Get precipitation and potential ET
+        precip = self.precip_func(t)  # mm/day
+        if self.et_calculator is not None:
+            et_pot = self.et_calculator.calculate(t)  # mm/day
+        else:
+            et_pot = 0.0
+
+        # Convert mm/day to cm/day
+        precip_cm = precip / 10.0
+        et_pot_cm = et_pot / 10.0
+
+        # Net atmospheric demand
+        atm_flux = precip_cm - et_pot_cm  # Positive = infiltration, negative = ET
+
+        # Determine BC type based on current state and atmospheric demand
+        h_surface = h[0]
+
+        if atm_flux > 0:
+            # INFILTRATION case
+            # Apply as small positive head (thin water film)
+            # This allows Richards equation to determine actual infiltration rate
+            self.bc_type = 'infiltration'
+            self.bc_switches['infiltration'] += 1
+
+            # Check if ponding exceeds maximum
+            if h_surface > self.ponding_max:
+                # Excessive ponding - limit to maximum and track runoff
+                excess = h_surface - self.ponding_max
+                self.cumulative_runoff += excess * dz  # Approximate runoff volume
+                h_ponding_actual = self.ponding_max
+            else:
+                h_ponding_actual = self.h_ponding
+
+            # Apply head BC with small positive head
+            a[0] = 0.0
+            b[0] = 1.0
+            c[0] = 0.0
+            d[0] = h_ponding_actual
+
+        elif atm_flux < 0:
+            # EVAPORATION case
+            # Check if surface is dry enough for stage 2 evaporation
+            if h_surface < self.h_stage2:
+                # Stage 2: Soil-limited evaporation
+                self.et_stage = 2
+                self.bc_type = 'stage2_et'
+                self.bc_switches['stage2_et'] += 1
+
+                # Apply head BC at stage 2 threshold
+                # This limits evaporation based on soil hydraulic properties
+                a[0] = 0.0
+                b[0] = 1.0
+                c[0] = 0.0
+                d[0] = self.h_stage2
+
+            else:
+                # Stage 1: Potential evaporation (flux-controlled)
+                self.et_stage = 1
+                self.bc_type = 'flux'
+                self.bc_switches['flux'] += 1
+
+                # Apply ET as flux BC
+                d[0] += atm_flux / dz
+
+        else:
+            # Zero flux (no precip, no ET)
+            self.bc_type = 'flux'
+            # No change to d[0] (zero flux)
+
+    def get_flux(self, h, K, dz, t):
+        """
+        Calculate actual flux at surface.
+
+        Returns
+        -------
+        flux : float
+            Actual surface flux [cm/day]
+            Positive = infiltration, negative = evaporation
+        """
+        if self.bc_type == 'flux':
+            # Flux BC: return prescribed flux
+            precip = self.precip_func(t) / 10.0  # mm/day -> cm/day
+            if self.et_calculator is not None:
+                et_pot = self.et_calculator.calculate(t) / 10.0
+            else:
+                et_pot = 0.0
+            return precip - et_pot
+
+        else:
+            # Head BC active: calculate actual flux from gradient
+            K_interface = 0.5 * (K[0] + K[1])
+            dh_dz = (h[1] - h[0]) / dz
+            flux = -K_interface * (dh_dz + 1.0)
+            return flux
+
+    def get_diagnostics(self) -> dict:
+        """Get enhanced atmospheric BC diagnostics."""
+        return {
+            'current_type': self.bc_type,
+            'et_stage': self.et_stage,
+            'h_stage2_threshold': self.h_stage2,
+            'pf_stage2_threshold': head_to_pf(self.h_stage2),
+            'cumulative_runoff': self.cumulative_runoff,
+            'n_switches_to_flux': self.bc_switches['flux'],
+            'n_switches_to_infiltration': self.bc_switches['infiltration'],
+            'n_switches_to_ponding': self.bc_switches['ponding'],
+            'n_switches_to_stage2_et': self.bc_switches['stage2_et']
         }
