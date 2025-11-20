@@ -21,6 +21,13 @@ from dataclasses import dataclass
 # Import from Phase 2
 from hydrus1dpy.materials import HydraulicModel
 
+# Optional xarray support
+try:
+    import xarray as xr
+    HAS_XARRAY = True
+except ImportError:
+    HAS_XARRAY = False
+
 from .richards_solver import RichardsSolver1D, SolverParameters
 from ..processes.boundary_conditions import (
     BoundaryCondition, ConstantHeadBC, ConstantFluxBC,
@@ -418,6 +425,117 @@ class HydrusModel:
             'theta': self.results['theta'][:, node_index],
             'depth': self.depths[node_index]
         }
+
+    def to_xarray(self) -> 'xr.Dataset':
+        """
+        Convert simulation results to xarray Dataset.
+
+        Returns
+        -------
+        ds : xarray.Dataset
+            Dataset containing:
+            - Coordinates: time, depth
+            - Data variables: h, theta, K, C
+            - Attributes: model metadata
+
+        Raises
+        ------
+        ImportError
+            If xarray is not installed
+        ValueError
+            If no results are available
+
+        Examples
+        --------
+        >>> results = model.run(t_end=1.0, dt_init=0.01)
+        >>> ds = model.to_xarray()
+        >>> ds.h.sel(depth=-50, method='nearest').plot()  # Plot h at 50 cm depth
+        >>> ds.theta.isel(time=-1).plot()  # Plot final theta profile
+        """
+        if not HAS_XARRAY:
+            raise ImportError(
+                "xarray is required for this feature. "
+                "Install with: pip install xarray"
+            )
+
+        if self.results is None:
+            raise ValueError("No results available. Run simulation first.")
+
+        # Create coordinates
+        coords = {
+            'time': ('time', self.results['times'], {'units': 'days', 'long_name': 'Time'}),
+            'depth': ('depth', self.depths, {'units': 'cm', 'long_name': 'Depth below surface'})
+        }
+
+        # Create data variables
+        data_vars = {
+            'h': (
+                ['time', 'depth'],
+                self.results['h'],
+                {
+                    'units': 'cm',
+                    'long_name': 'Pressure head',
+                    'description': 'Soil water pressure head (matric potential)'
+                }
+            ),
+            'theta': (
+                ['time', 'depth'],
+                self.results['theta'],
+                {
+                    'units': '-',
+                    'long_name': 'Water content',
+                    'description': 'Volumetric water content'
+                }
+            ),
+        }
+
+        # Add mass balance variables (1D time series)
+        mb = self.results['mass_balance']
+        data_vars.update({
+            'flux_top': (
+                ['time'],
+                mb['flux_top'],
+                {'units': 'cm', 'long_name': 'Cumulative flux at top boundary'}
+            ),
+            'flux_bottom': (
+                ['time'],
+                mb['flux_bottom'],
+                {'units': 'cm', 'long_name': 'Cumulative flux at bottom boundary'}
+            ),
+            'storage': (
+                ['time'],
+                mb['storage'],
+                {'units': 'cm', 'long_name': 'Water storage in profile'}
+            ),
+            'mass_balance_error': (
+                ['time'],
+                mb['error'],
+                {'units': 'cm', 'long_name': 'Mass balance error'}
+            ),
+        })
+
+        # Global attributes
+        attrs = {
+            'title': 'HYDRUS1D Phase 3 Simulation Results',
+            'description': '1D Richards equation solution',
+            'depth_total': self.depth,
+            'n_nodes': self.n_nodes,
+            'top_bc': self.bc_top.__class__.__name__,
+            'bottom_bc': self.bc_bottom.__class__.__name__,
+        }
+
+        # Add statistics as attributes
+        stats = self.results['statistics']
+        attrs.update({
+            'total_steps': stats['total_steps'],
+            'rejected_steps': stats['rejected_steps'],
+            'avg_iterations': stats['avg_iterations'],
+        })
+
+        # Create Dataset
+        ds = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
+
+        return ds
 
     def __repr__(self):
         return (
